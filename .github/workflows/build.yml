@@ -1,0 +1,72 @@
+name: Build WaveScope (AU & VST3)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps (brew)
+        run: |
+          brew update
+          brew install cmake juce
+
+      - name: Configure (CMake -> Xcode)
+        run: |
+          cmake -B build -G Xcode -D CMAKE_OSX_ARCHITECTURES="arm64;x86_64" .
+
+      - name: Build Release
+        run: |
+          cmake --build build --config Release
+
+      - name: Locate plugs
+        id: locate
+        run: |
+          set -e
+          AU=""
+          VST3=""
+          if [ -d "build/Release/WaveScope.component" ]; then AU="build/Release/WaveScope.component"; fi
+          if [ -z "$AU" ] && [ -d "build/WaveScope_artefacts/Release/AU/WaveScope.component" ]; then AU="build/WaveScope_artefacts/Release/AU/WaveScope.component"; fi
+          if [ -d "build/Release/WaveScope.vst3" ]; then VST3="build/Release/WaveScope.vst3"; fi
+          if [ -z "$VST3" ] && [ -d "build/WaveScope_artefacts/Release/VST3/WaveScope.vst3" ]; then VST3="build/WaveScope_artefacts/Release/VST3/WaveScope.vst3"; fi
+          echo "au_path=$AU"   >> $GITHUB_OUTPUT
+          echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
+
+      - name: Ad-hoc codesign (AU & VST3)
+        run: |
+          set -e
+          if [ -n "${{ steps.locate.outputs.au_path }}" ]; then
+            codesign --force --deep --sign - "${{ steps.locate.outputs.au_path }}"
+          fi
+          if [ -n "${{ steps.locate.outputs.vst3_path }}" ]; then
+            codesign --force --deep --sign - "${{ steps.locate.outputs.vst3_path }}"
+          fi
+          # Показать статус подписи в логах:
+          if [ -n "${{ steps.locate.outputs.au_path }}" ]; then
+            codesign -dv --verbose=2 "${{ steps.locate.outputs.au_path }}" || true
+          fi
+          if [ -n "${{ steps.locate.outputs.vst3_path }}" ]; then
+            codesign -dv --verbose=2 "${{ steps.locate.outputs.vst3_path }}" || true
+          fi
+
+      - name: Package artifacts
+        run: |
+          mkdir -p out
+          if [ -n "${{ steps.locate.outputs.au_path }}" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "${{ steps.locate.outputs.au_path }}" "out/WaveScope-AU.zip"
+          fi
+          if [ -n "${{ steps.locate.outputs.vst3_path }}" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "${{ steps.locate.outputs.vst3_path }}" "out/WaveScope-VST3.zip"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WaveScope-binaries
+          path: out/*
